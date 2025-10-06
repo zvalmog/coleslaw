@@ -1,0 +1,5 @@
+{
+  "name": "WebGL Coleslaw Simulator",
+  "description": "A ~physically-realistic WebGL simulation of a bowl of coleslaw. Users can pick up, move, and pile individual pieces of shredded cabbage and carrots using their mouse.",
+  "requestFramePermissions": []
+}
