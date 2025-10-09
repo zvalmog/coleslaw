@@ -41,16 +41,27 @@ Several key decisions were made to balance visual quality, interactivity, and pe
 
 -   **Decision:** All 1200 shreds are rendered using `THREE.InstancedMesh` instead of individual `THREE.Mesh` objects. Three separate `InstancedMesh` objects are used—one for each <= 500 shred color/material set.
 -   **Rationale:** This is the single most important performance optimization in the simulation. Instead of telling the GPU to draw 1200 different objects every frame, we now send only 3 "draw calls". This dramatically reduces the communication overhead between the CPU and GPU, freeing up the main thread and leading to significantly higher and more stable frame rates. In the animation loop, we simply update the transformation matrix for each instance, which is a very fast operation.
+-   **Verification:** For a hands-on demonstration and detailed analysis of this performance gain, please see [**OPTIMIZATION.md**](./OPTIMIZATION.md).
 
-### 4. User Interaction: Kinematic Dragging
+### 4. Shadow Optimization
+
+-   **Decision:** Individual coleslaw shreds are set to `receiveShadow` but not `castShadow`.
+-   **Rationale:** While instancing solves the CPU bottleneck of draw calls, rendering shadows for 1,200 dynamic objects is demanding on the GPU. Each shadow-casting object must be rendered into a shadow map from the light's perspective. By disabling this for the shreds, we reduce the associated GPU load. The visual impact is minimal, as the shreds still receive shadows from the bowl, preserving the sense of depth.
+
+### 5. High-DPI Display Optimization
+
+-   **Decision:** The renderer's `devicePixelRatio` is capped at a value of `1.5`.
+-   **Rationale:** Modern high-resolution displays (like Apple's Retina displays) can have a device pixel ratio of 2.0 or higher. Without a cap, this forces the GPU to render four times as many pixels (2.0 * 2.0) as a standard display, which can prevent the simulation from reaching the screen's refresh rate even on powerful hardware. Capping the ratio at 1.5 provides a significant performance boost while maintaining excellent visual sharpness on these screens.
+
+### 6. User Interaction: Kinematic Dragging
 
 -   **Decision:** When a user clicks and drags a shred, its physics body type is temporarily switched from `Dynamic` to `KinematicPositionBased`.
 -   **Rationale:** A `Dynamic` body is fully controlled by the physics engine (reacting to forces and collisions). A `Kinematic` body, however, can be controlled directly by user code. This switch prevents the physics engine from fighting the user's mouse input, resulting in smooth, direct control. Upon release, the body is switched back to `Dynamic`, and a velocity based on the mouse's final movement is applied to create a satisfying "throwing" effect.
 
 ## Performance Characteristics
 
--   **CPU-Bound:** The simulation's performance is primarily limited by the CPU, not the GPU. The most intensive task is the Rapier3D physics step (`world.step()`). The JavaScript loop for synchronizing the 1200 instance matrices is also a factor, but it is much faster than manipulating 1200 individual scene objects.
--   **GPU Load:** The GPU workload is very light due to the use of instancing, simple geometry, and efficient toon shading materials.
+-   **CPU Load:** The simulation's performance is primarily limited by the CPU. The most intensive task is the Rapier3D physics step (`world.step()`). The JavaScript loop for synchronizing the 1200 instance matrices also contributes, but it is very fast.
+-   **GPU Load:** With optimizations in place, the GPU load is well-managed. The primary GPU tasks are rendering the geometry and processing shadows from the bowl. A key factor influencing GPU load is the **Device Pixel Ratio (DPR)**. On high-DPI screens, capping the DPR is crucial to prevent the GPU from becoming a bottleneck due to the sheer number of pixels it must render each frame.
 -   **Scalability:** The primary performance bottleneck remains the physics simulation. The simulation scales linearly with the number of shreds; doubling the shreds will roughly double the CPU load for physics calculations.
 
 ## Possible Areas for Improvement
@@ -60,7 +71,3 @@ While the current implementation is highly effective, further optimizations are 
 1.  **Offload Physics to a Web Worker:**
     -   **Problem:** The physics simulation runs on the main browser thread, which is also responsible for UI updates and rendering. A complex physics step can cause the frame rate to drop, leading to stutter.
     -   **Solution:** The entire Rapier3D simulation could be moved into a [Web Worker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API). The worker would run the physics on a separate CPU core. Each frame, it would post a message back to the main thread containing an array of updated positions and rotations for all shreds. This completely decouples physics from rendering, potentially leading to a much smoother user experience (if physics updates are polled from a shared buffer, or updates coalesced to match the transient frame rate).
-
-2.  **Shadow Optimization:**
-    -   **Problem:** Every one of the 1200 instanced shreds is configured to cast a shadow, which can still be expensive for the GPU to render.
-    -   **Solution:** We could reduce the shadow map resolution on the `DirectionalLight` or investigate more advanced techniques, though the performance benefit might be minor compared to the gains already achieved with instancing.

@@ -40,7 +40,6 @@ const Coleslaw: React.FC = () => {
             // Renderer setup
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(mount.clientWidth, mount.clientHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
             renderer.shadowMap.enabled = true;
             mount.appendChild(renderer.domElement);
 
@@ -79,6 +78,7 @@ const Coleslaw: React.FC = () => {
             const bowlGeo = new THREE.LatheGeometry(points, 40);
             const bowlMesh = new THREE.Mesh(bowlGeo, bowlMaterial);
             bowlMesh.receiveShadow = true;
+
             scene.add(bowlMesh);
 
             // Physics Bowl (Trimesh Collider)
@@ -98,9 +98,9 @@ const Coleslaw: React.FC = () => {
             const cabbageInstance1 = new THREE.InstancedMesh(shredGeometry, cabbageMaterial1, numCabbage1);
             const cabbageInstance2 = new THREE.InstancedMesh(shredGeometry, cabbageMaterial2, numCabbage2);
             const carrotInstance = new THREE.InstancedMesh(shredGeometry, carrotMaterial, numCarrots);
-            cabbageInstance1.castShadow = true;
-            cabbageInstance2.castShadow = true;
-            carrotInstance.castShadow = true;
+            cabbageInstance1.receiveShadow = true;
+            cabbageInstance2.receiveShadow = true;
+            carrotInstance.receiveShadow = true;
             scene.add(cabbageInstance1, cabbageInstance2, carrotInstance);
 
             const instancedMeshes = [cabbageInstance1, cabbageInstance2, carrotInstance];
@@ -161,9 +161,7 @@ const Coleslaw: React.FC = () => {
                     if (foundShred) {
                         draggedShred = foundShred;
                         draggedShred.body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased);
-                        if (raycaster.ray.intersectPlane(dragPlane, dragPoint)) {
-                            // Initial setup if needed
-                        }
+                        raycaster.ray.intersectPlane(dragPlane, dragPoint);
                     }
                 }
             };
@@ -229,6 +227,7 @@ const Coleslaw: React.FC = () => {
             const handleResize = () => {
                 const w = mount.clientWidth;
                 const h = mount.clientHeight;
+                renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
                 effect.setSize(w, h);
                 camera.aspect = w / h;
                 camera.updateProjectionMatrix();
