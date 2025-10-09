@@ -145,7 +145,7 @@ const Coleslaw: React.FC = () => {
             let lastMousePos = { x: 0, y: 0 };
             let mouseVelocity = { x: 0, y: 0 };
 
-            const onMouseDown = (event: MouseEvent) => {
+            const onMouseDown = (event: { clientX: number, clientY: number }) => {
                 mouse.x = (event.clientX / mount.clientWidth) * 2 - 1;
                 mouse.y = -(event.clientY / mount.clientHeight) * 2 + 1;
                 raycaster.setFromCamera(mouse, camera);
@@ -166,7 +166,7 @@ const Coleslaw: React.FC = () => {
                 }
             };
 
-            const onMouseMove = (event: MouseEvent) => {
+            const onMouseMove = (event: { clientX: number, clientY: number }) => {
                 mouseVelocity = { x: event.clientX - lastMousePos.x, y: event.clientY - lastMousePos.y };
                 lastMousePos = { x: event.clientX, y: event.clientY };
 
@@ -191,10 +191,27 @@ const Coleslaw: React.FC = () => {
                     draggedShred = null;
                 }
             };
+            const onTouchStart = (event: TouchEvent) => {
+                event.preventDefault();
+                if (event.touches.length > 0) {
+                    onMouseDown({ clientX: event.touches[0].clientX, clientY: event.touches[0].clientY });
+                }
+            };
+            const onTouchMove = (event: TouchEvent) => {
+                event.preventDefault();
+                if (event.touches.length > 0) {
+                    onMouseMove({ clientX: event.touches[0].clientX, clientY: event.touches[0].clientY });
+                }
+            };
+            const onTouchEnd = () => onMouseUp();
 
             mount.addEventListener('mousedown', onMouseDown);
             mount.addEventListener('mousemove', onMouseMove);
             mount.addEventListener('mouseup', onMouseUp);
+            mount.addEventListener('touchstart', onTouchStart, { passive: false });
+            mount.addEventListener('touchmove', onTouchMove, { passive: false });
+            mount.addEventListener('touchend', onTouchEnd);
+            mount.addEventListener('touchcancel', onTouchEnd);
 
             // Animation loop
             const matrix = new THREE.Matrix4();
