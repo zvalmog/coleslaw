@@ -1,6 +1,8 @@
 
 import React, { useRef, useEffect } from 'react';
 import * as THREE from 'three';
+import { OutlineEffect } from 'three/examples/jsm/effects/OutlineEffect.js';
+import PhysicsWorker from './physics.worker.ts?worker';
 
 const Coleslaw: React.FC = () => {
     const mountRef = useRef<HTMLDivElement>(null);
@@ -10,25 +12,18 @@ const Coleslaw: React.FC = () => {
         if (isInitialized.current || !mountRef.current) return;
         isInitialized.current = true;
 
-        let scene: THREE.Scene, camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer, world: any, effect: any;
+        let camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer, effect: any;
         let animationFrameId: number;
-        const shreds: { body: any; instanceMesh: THREE.InstancedMesh; instanceId: number; scale: THREE.Vector3; }[] = [];
+        let worker: Worker;
 
         const init = async () => {
             const mount = mountRef.current;
             if (!mount) return;
 
-            // Load libraries from local node_modules so Vite bundles them for production
-            const [RAPIER, THREE, { OutlineEffect }] = await Promise.all([
-                import('@dimforge/rapier3d-compat'),
-                import('three'),
-                import('three/examples/jsm/effects/OutlineEffect.js')
-            ]);
-
-            await RAPIER.init();
+            worker = new PhysicsWorker();
 
             // Scene setup
-            scene = new THREE.Scene();
+            const scene = new THREE.Scene();
             scene.background = new THREE.Color(0x334155); // slate-700
 
             // Camera setup
@@ -55,10 +50,6 @@ const Coleslaw: React.FC = () => {
             directionalLight.shadow.mapSize.height = 2048;
             scene.add(directionalLight);
 
-            // Physics world
-            const gravity = { x: 0.0, y: -9.81, z: 0.0 };
-            world = new RAPIER.World(gravity);
-
             // Materials
             const bowlMaterial = new THREE.MeshToonMaterial({ color: 0xf1f5f9 });
             const cabbageMaterial1 = new THREE.MeshToonMaterial({ color: 0xc8e6c9 });
@@ -69,7 +60,6 @@ const Coleslaw: React.FC = () => {
             const bowlRadius = 8;
             const bowlHeight = 6;
 
-            // Visual Bowl
             const points = [
                 new THREE.Vector2(0.1, 0), // Bottom center (slightly off to avoid artifacts)
                 new THREE.Vector2(bowlRadius * 0.7, 0.2), // Curve start
@@ -78,70 +68,58 @@ const Coleslaw: React.FC = () => {
             const bowlGeo = new THREE.LatheGeometry(points, 40);
             const bowlMesh = new THREE.Mesh(bowlGeo, bowlMaterial);
             bowlMesh.receiveShadow = true;
-
             scene.add(bowlMesh);
-
-            // Physics Bowl (Trimesh Collider)
-            const vertices = bowlGeo.attributes.position.array as Float32Array;
-            const indices = bowlGeo.index.array as Uint32Array;
-            const bowlBodyDesc = RAPIER.RigidBodyDesc.fixed();
-            const bowlBody = world.createRigidBody(bowlBodyDesc);
-            const bowlColliderDesc = RAPIER.ColliderDesc.trimesh(vertices, indices);
-            world.createCollider(bowlColliderDesc, bowlBody);
 
             // Create Shreds
             const numCabbage1 = 500;
             const numCabbage2 = 500;
             const numCarrots = 200;
+            const totalShreds = numCabbage1 + numCabbage2 + numCarrots;
 
             const shredGeometry = new THREE.BoxGeometry(1, 1, 1);
             const cabbageInstance1 = new THREE.InstancedMesh(shredGeometry, cabbageMaterial1, numCabbage1);
             const cabbageInstance2 = new THREE.InstancedMesh(shredGeometry, cabbageMaterial2, numCabbage2);
             const carrotInstance = new THREE.InstancedMesh(shredGeometry, carrotMaterial, numCarrots);
+            
+            cabbageInstance1.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            cabbageInstance2.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            carrotInstance.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
             cabbageInstance1.receiveShadow = true;
             cabbageInstance2.receiveShadow = true;
             carrotInstance.receiveShadow = true;
             scene.add(cabbageInstance1, cabbageInstance2, carrotInstance);
 
             const instancedMeshes = [cabbageInstance1, cabbageInstance2, carrotInstance];
+            
+            const shredDimensions = new Array(totalShreds).fill(0).map(() => ({
+                width: 1.2 + Math.random() * 0.6,
+                height: 0.05,
+                depth: 0.1 + Math.random() * 0.1,
+            }));
 
-            const createShredsForInstance = (instanceMesh: THREE.InstancedMesh, count: number) => {
-                for (let i = 0; i < count; i++) {
-                    const shredWidth = 1.2 + Math.random() * 0.6;
-                    const shredHeight = 0.05;
-                    const shredDepth = 0.1 + Math.random() * 0.1;
-                    const scale = new THREE.Vector3(shredWidth, shredHeight, shredDepth);
+            const shredScales: THREE.Vector3[] = shredDimensions.map(d => new THREE.Vector3(d.width, d.height, d.depth));
 
-                    const bodyDesc = RAPIER.RigidBodyDesc.dynamic()
-                        .setTranslation(
-                            (Math.random() - 0.5) * (bowlRadius * 0.8),
-                            bowlHeight + Math.random() * 5,
-                            (Math.random() - 0.5) * (bowlRadius * 0.8)
-                        )
-                        .setRotation({
-                            x: Math.random(), y: Math.random(), z: Math.random(), w: Math.random()
-                        });
 
-                    const body = world.createRigidBody(bodyDesc);
-                    const colliderDesc = RAPIER.ColliderDesc.cuboid(shredWidth / 2, shredHeight / 2, shredDepth / 2)
-                        .setDensity(0.5); // Lighter shreds
-                    world.createCollider(colliderDesc, body);
-
-                    shreds.push({ body, instanceMesh, instanceId: i, scale });
+            // Init worker
+            worker.postMessage({
+                type: 'init',
+                payload: {
+                    bowlRadius,
+                    bowlHeight,
+                    bowlVertices: bowlGeo.attributes.position.array as Float32Array,
+                    bowlIndices: bowlGeo.index.array as Uint32Array,
+                    shredDimensions,
                 }
-            };
-
-            createShredsForInstance(cabbageInstance1, numCabbage1);
-            createShredsForInstance(cabbageInstance2, numCabbage2);
-            createShredsForInstance(carrotInstance, numCarrots);
-
+            });
 
             // Mouse interaction
             const raycaster = new THREE.Raycaster();
             const mouse = new THREE.Vector2();
-            let draggedShred: { body: any; } | null = null;
-            const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-            let dragPoint = new THREE.Vector3();
+            let draggedShredIndex: number | null = null;
+            const dragPlane = new THREE.Plane();
+            const dragPoint = new THREE.Vector3();
+            const dragOffset = new THREE.Vector3();
             let lastMousePos = { x: 0, y: 0 };
             let mouseVelocity = { x: 0, y: 0 };
 
@@ -154,15 +132,26 @@ const Coleslaw: React.FC = () => {
                 if (intersects.length > 0) {
                     const intersection = intersects[0] as any;
                     const instanceId = intersection.instanceId;
-                    const instanceMesh = intersection.object;
+                    const instanceMesh = intersection.object as THREE.InstancedMesh;
+                    let shredIndex = 0;
 
-                    const foundShred = shreds.find(s => s.instanceMesh === instanceMesh && s.instanceId === instanceId);
+                    if (instanceMesh === cabbageInstance1) shredIndex = instanceId;
+                    else if (instanceMesh === cabbageInstance2) shredIndex = numCabbage1 + instanceId;
+                    else shredIndex = numCabbage1 + numCabbage2 + instanceId;
+                    
+                    draggedShredIndex = shredIndex;
+                    worker.postMessage({ type: 'dragStart', payload: { shredIndex } });
+                    
+                    const intersectionPoint = intersection.point.clone();
+                    const matrix = new THREE.Matrix4();
+                    instanceMesh.getMatrixAt(instanceId, matrix);
+                    const shredCenter = new THREE.Vector3().setFromMatrixPosition(matrix);
+                    
+                    dragOffset.copy(shredCenter).sub(intersectionPoint);
 
-                    if (foundShred) {
-                        draggedShred = foundShred;
-                        draggedShred.body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased);
-                        raycaster.ray.intersectPlane(dragPlane, dragPoint);
-                    }
+                    const cameraDirection = new THREE.Vector3();
+                    camera.getWorldDirection(cameraDirection);
+                    dragPlane.setFromNormalAndCoplanarPoint(cameraDirection, intersectionPoint);
                 }
             };
 
@@ -170,25 +159,34 @@ const Coleslaw: React.FC = () => {
                 mouseVelocity = { x: event.clientX - lastMousePos.x, y: event.clientY - lastMousePos.y };
                 lastMousePos = { x: event.clientX, y: event.clientY };
 
-                if (draggedShred) {
+                if (draggedShredIndex !== null) {
                     mouse.x = (event.clientX / mount.clientWidth) * 2 - 1;
                     mouse.y = -(event.clientY / mount.clientHeight) * 2 + 1;
                     raycaster.setFromCamera(mouse, camera);
 
-                    const pos = draggedShred.body.translation();
-                    dragPlane.set(new THREE.Vector3(0, 1, 0), -pos.y);
-
                     if (raycaster.ray.intersectPlane(dragPlane, dragPoint)) {
-                        draggedShred.body.setNextKinematicTranslation({ x: dragPoint.x, y: dragPoint.y + 1, z: dragPoint.z });
+                        dragPoint.add(dragOffset);
+                        worker.postMessage({
+                            type: 'dragMove',
+                            payload: {
+                                shredIndex: draggedShredIndex,
+                                position: { x: dragPoint.x, y: dragPoint.y, z: dragPoint.z }
+                            }
+                        });
                     }
                 }
             };
 
             const onMouseUp = () => {
-                if (draggedShred) {
-                    draggedShred.body.setBodyType(RAPIER.RigidBodyType.Dynamic);
-                    draggedShred.body.setLinvel({ x: mouseVelocity.x * 2.5, y: 5, z: mouseVelocity.y * 2.5 }, true);
-                    draggedShred = null;
+                if (draggedShredIndex !== null) {
+                    worker.postMessage({
+                        type: 'dragEnd',
+                        payload: {
+                            shredIndex: draggedShredIndex,
+                            linvel: { x: mouseVelocity.x * 2.5, y: 5, z: mouseVelocity.y * 2.5 }
+                        }
+                    });
+                    draggedShredIndex = null;
                 }
             };
             const onTouchStart = (event: TouchEvent) => {
@@ -205,6 +203,7 @@ const Coleslaw: React.FC = () => {
             };
             const onTouchEnd = () => onMouseUp();
 
+
             mount.addEventListener('mousedown', onMouseDown);
             mount.addEventListener('mousemove', onMouseMove);
             mount.addEventListener('mouseup', onMouseUp);
@@ -213,28 +212,44 @@ const Coleslaw: React.FC = () => {
             mount.addEventListener('touchend', onTouchEnd);
             mount.addEventListener('touchcancel', onTouchEnd);
 
+
             // Animation loop
             const matrix = new THREE.Matrix4();
             const position = new THREE.Vector3();
             const quaternion = new THREE.Quaternion();
+
+            worker.onmessage = (event) => {
+                const { type, payload } = event.data;
+                if (type === 'transforms') {
+                    const transforms = new Float32Array(payload);
+                    let offset = 0;
+
+                    for (let i = 0; i < totalShreds; i++) {
+                        position.set(transforms[offset++], transforms[offset++], transforms[offset++]);
+                        quaternion.set(transforms[offset++], transforms[offset++], transforms[offset++], transforms[offset++]);
+                        
+                        const scale = shredScales[i];
+                        matrix.compose(position, quaternion, scale);
+
+                        if (i < numCabbage1) {
+                            cabbageInstance1.setMatrixAt(i, matrix);
+                        } else if (i < numCabbage1 + numCabbage2) {
+                            cabbageInstance2.setMatrixAt(i - numCabbage1, matrix);
+                        } else {
+                            carrotInstance.setMatrixAt(i - numCabbage1 - numCabbage2, matrix);
+                        }
+                    }
+
+                    instancedMeshes.forEach(mesh => {
+                        mesh.instanceMatrix.needsUpdate = true;
+                    });
+
+                    // Return buffer to worker for reuse
+                    worker.postMessage({ type: 'transforms_ack', payload }, [payload]);
+                }
+            };
+
             const animate = () => {
-                world.step();
-
-                shreds.forEach(shred => {
-                    const pos = shred.body.translation();
-                    const rot = shred.body.rotation();
-
-                    position.set(pos.x, pos.y, pos.z);
-                    quaternion.set(rot.x, rot.y, rot.z, rot.w);
-
-                    matrix.compose(position, quaternion, shred.scale);
-                    shred.instanceMesh.setMatrixAt(shred.instanceId, matrix);
-                });
-
-                instancedMeshes.forEach(mesh => {
-                    mesh.instanceMatrix.needsUpdate = true;
-                });
-
                 effect.render(scene, camera);
                 animationFrameId = requestAnimationFrame(animate);
             };
@@ -250,6 +265,7 @@ const Coleslaw: React.FC = () => {
                 camera.updateProjectionMatrix();
             };
             window.addEventListener('resize', handleResize);
+            handleResize();
 
             // Cleanup
             return () => {
@@ -257,11 +273,15 @@ const Coleslaw: React.FC = () => {
                 mount.removeEventListener('mousedown', onMouseDown);
                 mount.removeEventListener('mousemove', onMouseMove);
                 mount.removeEventListener('mouseup', onMouseUp);
+                mount.removeEventListener('touchstart', onTouchStart);
+                mount.removeEventListener('touchmove', onTouchMove);
+                mount.removeEventListener('touchend', onTouchEnd);
+                mount.removeEventListener('touchcancel', onTouchEnd);
                 cancelAnimationFrame(animationFrameId);
+                worker.postMessage({ type: 'stop' });
                 if (mount && renderer.domElement) {
                     mount.removeChild(renderer.domElement);
                 }
-                world.free();
             };
         };
 

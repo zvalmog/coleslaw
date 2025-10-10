@@ -6,19 +6,31 @@ This document provides a detailed breakdown of the core rendering and physics si
 
 The simulation leverages a combination of powerful web technologies to achieve a real-time, interactive 3D experience:
 
--   **Rendering:** [Three.js](https://threejs.org/) is used for all 3D rendering, including scene setup, camera, lighting, materials, and object management.
--   **Physics:** [@dimforge/rapier3d-compat](https://rapier.rs/) handles the physics simulation. It runs via WebAssembly (WASM) for near-native performance, calculating the motion and collision of all coleslaw shreds.
+-   **Rendering:** [Three.js](https://threejs.org/) is used for all 3D rendering on the main browser thread, including scene setup, camera, lighting, materials, and object management.
+-   **Physics:** [@dimforge/rapier3d-compat](https://rapier.rs/) handles the physics simulation. It runs inside a **Web Worker** via WebAssembly (WASM) for near-native performance, calculating the motion and collision of all coleslaw shreds on a separate CPU core.
 -   **Framework:** [React](https://react.dev/) is used to manage the component lifecycle and mount the WebGL canvas. The simulation itself is initialized within a `useEffect` hook to ensure it runs only on the client and only once.
 
 ## Core Rendering & Physics Pipeline
 
-The simulation runs in a continuous loop orchestrated by `requestAnimationFrame`. Each frame executes the following steps in order:
+The simulation is split between the main browser thread and a dedicated Web Worker to ensure a smooth, non-blocking user experience.
 
-1.  **Advance Physics:** The `world.step()` function is called. This tells the Rapier3D engine to advance the simulation by one timestep, calculating forces (like gravity), detecting collisions, and updating the positions and rotations of all dynamic rigid bodies (the shreds).
+### Physics Thread (Web Worker)
 
-2.  **Synchronize Visuals:** The application iterates through all 1200 shred objects' physics data. For each, it computes a transformation matrix (combining position, rotation, and the shred's unique scale) and updates the corresponding instance within one of three `THREE.InstancedMesh` objects (one for each <= 500 shred set). This is highly efficient as it avoids manipulating individual objects in the Three.js scene graph.
+A separate thread is responsible for all physics calculations to prevent them from interfering with rendering.
 
-3.  **Render Scene:** The `effect.render(scene, camera)` function is called. This instructs Three.js to render the scene from the camera's perspective. An `OutlineEffect` is used instead of the standard `WebGLRenderer.render()` to achieve the stylized, cel-shaded visual appearance.
+1.  **Initialization:** The worker receives instructions from the main thread to set up the Rapier3D physics world, including the static bowl and all 1200 dynamic coleslaw shreds.
+2.  **Simulation Loop:** The worker runs a continuous loop synchronized with the display's refresh rate (`requestAnimationFrame`). In each tick, it calls `world.step()` to advance the physics simulation.
+3.  **Data Transfer:** After each step, the positions and rotations of all 1200 shreds are written into a `Float32Array`. The underlying `ArrayBuffer` is then efficiently transferred to the main thread with zero-copy using the Transferable Objects API. This avoids costly data cloning.
+
+### Main Thread (Rendering)
+
+The main thread handles all user input, rendering, and communication with the physics worker.
+
+1.  **Receive Physics Data:** The main thread listens for messages from the worker. When it receives the `ArrayBuffer` with the latest shred transformations, it immediately uses the data to update the visual representation.
+2.  **Synchronize Visuals:** It iterates through the received transformation data, computes a final transformation matrix (combining position, rotation, and scale) for each shred, and updates the `THREE.InstancedMesh` objects. This is a very fast process.
+3.  **Return Buffer:** To avoid memory allocation and garbage collection in the physics loop, the main thread transfers ownership of the `ArrayBuffer` back to the worker, allowing it to be reused in the next physics step.
+4.  **Render Scene:** In a separate `requestAnimationFrame` loop, the main thread continuously renders the Three.js scene using `effect.render(scene, camera)`. Because the physics calculations are offloaded, this loop is not blocked and can maintain a high frame rate.
+5.  **User Interaction:** Mouse and touch events are captured on the main thread. When a user drags a shred, the main thread sends messages to the worker (e.g., `dragStart`, `dragMove`, `dragEnd`) to update the state of the corresponding physics body.
 
 ## Design Decisions & Optimizations
 
@@ -55,19 +67,11 @@ Several key decisions were made to balance visual quality, interactivity, and pe
 
 ### 6. User Interaction: Kinematic Dragging
 
--   **Decision:** When a user clicks and drags a shred, its physics body type is temporarily switched from `Dynamic` to `KinematicPositionBased`.
+-   **Decision:** When a user clicks and drags a shred, its physics body type is temporarily switched from `Dynamic` to `KinematicPositionBased` inside the physics worker.
 -   **Rationale:** A `Dynamic` body is fully controlled by the physics engine (reacting to forces and collisions). A `Kinematic` body, however, can be controlled directly by user code. This switch prevents the physics engine from fighting the user's mouse input, resulting in smooth, direct control. Upon release, the body is switched back to `Dynamic`, and a velocity based on the mouse's final movement is applied to create a satisfying "throwing" effect.
 
 ## Performance Characteristics
 
--   **CPU Load:** The simulation's performance is primarily limited by the CPU. The most intensive task is the Rapier3D physics step (`world.step()`). The JavaScript loop for synchronizing the 1200 instance matrices also contributes, but it is very fast.
+-   **CPU Load:** The most CPU-intensive task—the Rapier3D physics step (`world.step()`)—is offloaded to a Web Worker. This allows it to run on a separate CPU core, preventing it from blocking the main thread responsible for rendering and user interaction. The main thread's CPU load is now very low, consisting only of rendering commands and message passing, which leads to a significantly smoother and more responsive experience.
 -   **GPU Load:** With optimizations in place, the GPU load is well-managed. The primary GPU tasks are rendering the geometry and processing shadows from the bowl. A key factor influencing GPU load is the **Device Pixel Ratio (DPR)**. On high-DPI screens, capping the DPR is crucial to prevent the GPU from becoming a bottleneck due to the sheer number of pixels it must render each frame.
--   **Scalability:** The primary performance bottleneck remains the physics simulation. The simulation scales linearly with the number of shreds; doubling the shreds will roughly double the CPU load for physics calculations.
-
-## Possible Areas for Improvement
-
-While the current implementation is highly effective, further optimizations are possible for scaling to an even larger number of objects.
-
-1.  **Offload Physics to a Web Worker:**
-    -   **Problem:** The physics simulation runs on the main browser thread, which is also responsible for UI updates and rendering. A complex physics step can cause the frame rate to drop, leading to stutter.
-    -   **Solution:** The entire Rapier3D simulation could be moved into a [Web Worker](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API). The worker would run the physics on a separate CPU core. Each frame, it would post a message back to the main thread containing an array of updated positions and rotations for all shreds. This completely decouples physics from rendering, potentially leading to a much smoother user experience (if physics updates are polled from a shared buffer, or updates coalesced to match the transient frame rate).
+-   **Scalability:** With physics on a separate thread, the simulation can scale to a larger number of shreds before the physics worker's CPU core becomes saturated. The main rendering thread remains responsive, as it is decoupled from the complexity of the physics simulation.
