@@ -76,6 +76,7 @@ const Coleslaw: React.FC = () => {
             const totalShreds = numCabbage1 + numCabbage2 + numCarrots;
 
             const shredGeometry = new THREE.BoxGeometry(1, 1, 1);
+
             const cabbageInstance1 = new THREE.InstancedMesh(shredGeometry, cabbageMaterial1, numCabbage1);
             const cabbageInstance2 = new THREE.InstancedMesh(shredGeometry, cabbageMaterial2, numCabbage2);
             const carrotInstance = new THREE.InstancedMesh(shredGeometry, carrotMaterial, numCarrots);
@@ -121,7 +122,6 @@ const Coleslaw: React.FC = () => {
             });
 
             // Mouse interaction
-            const raycaster = new THREE.Raycaster();
             const mouse = new THREE.Vector2();
             let draggedShredIndex: number | null = null;
             let latestDragPosition: THREE.Vector3 | null = null;
@@ -132,43 +132,89 @@ const Coleslaw: React.FC = () => {
             let lastMousePos = { x: 0, y: 0 };
             let mouseVelocity = { x: 0, y: 0 };
             const matrix = new THREE.Matrix4();
+            const GRAB_RADIUS_PIXELS = 50; // The "scoop" size
 
             const onMouseDown = (event: { clientX: number, clientY: number }) => {
-                mouse.x = (event.clientX / mount.clientWidth) * 2 - 1;
-                mouse.y = -(event.clientY / mount.clientHeight) * 2 + 1;
-                raycaster.setFromCamera(mouse, camera);
-                const intersects = raycaster.intersectObjects(instancedMeshes);
+                if (draggedShredIndex !== null) return; // Already dragging
 
-                if (intersects.length > 0) {
-                    const intersection = intersects[0] as any;
-                    const instanceId = intersection.instanceId;
-                    const instanceMesh = intersection.object as THREE.InstancedMesh;
-                    let shredIndex = 0;
+                const rect = mount.getBoundingClientRect();
+                const mouseX = event.clientX - rect.left;
+                const mouseY = event.clientY - rect.top;
 
-                    if (instanceMesh === cabbageInstance1) {
-                         shredIndex = instanceId;
-                         activeGhost = ghostMeshes.cabbage1;
-                    } else if (instanceMesh === cabbageInstance2) {
-                        shredIndex = numCabbage1 + instanceId;
+                let closestShredIndex = -1;
+                let minDistanceSq = Infinity;
+                const closestShredPosition = new THREE.Vector3();
+                const closestShredQuaternion = new THREE.Quaternion();
+                const closestShredScale = new THREE.Vector3();
+                
+                const worldPos = new THREE.Vector3();
+                const screenPos = new THREE.Vector3();
+                let shredIdxCounter = 0;
+
+                // Iterate all shreds to find the closest one to the mouse in 2D screen space
+                for (const mesh of instancedMeshes) {
+                    for (let i = 0; i < mesh.count; i++) {
+                        mesh.getMatrixAt(i, matrix);
+                        
+                        const scale = new THREE.Vector3().setFromMatrixScale(matrix);
+                        if (scale.x === 0) { // Skip hidden/dragged shreds
+                            shredIdxCounter++;
+                            continue;
+                        }
+
+                        worldPos.setFromMatrixPosition(matrix);
+                        screenPos.copy(worldPos).project(camera);
+
+                        const screenX = (screenPos.x + 1) * mount.clientWidth / 2;
+                        const screenY = (-screenPos.y + 1) * mount.clientHeight / 2;
+
+                        const dx = mouseX - screenX;
+                        const dy = mouseY - screenY;
+                        const distanceSq = dx * dx + dy * dy;
+
+                        if (distanceSq < minDistanceSq) {
+                            minDistanceSq = distanceSq;
+                            closestShredIndex = shredIdxCounter;
+                            matrix.decompose(closestShredPosition, closestShredQuaternion, closestShredScale);
+                        }
+                        shredIdxCounter++;
+                    }
+                }
+
+                if (closestShredIndex !== -1 && minDistanceSq < GRAB_RADIUS_PIXELS * GRAB_RADIUS_PIXELS) {
+                    draggedShredIndex = closestShredIndex;
+
+                    if (draggedShredIndex < numCabbage1) {
+                        activeGhost = ghostMeshes.cabbage1;
+                    } else if (draggedShredIndex < numCabbage1 + numCabbage2) {
                         activeGhost = ghostMeshes.cabbage2;
                     } else {
-                        shredIndex = numCabbage1 + numCabbage2 + instanceId;
                         activeGhost = ghostMeshes.carrot;
                     }
                     
-                    draggedShredIndex = shredIndex;
-                    worker.postMessage({ type: 'dragStart', payload: { shredIndex } });
+                    const p = closestShredPosition;
+                    const q = closestShredQuaternion;
+                    const s = closestShredScale;
+
+                    worker.postMessage({ 
+                        type: 'dragStart', 
+                        payload: { 
+                            shredIndex: draggedShredIndex,
+                            position: { x: p.x, y: p.y, z: p.z }
+                        } 
+                    });
                     
-                    const intersectionPoint = intersection.point.clone();
-                    instanceMesh.getMatrixAt(instanceId, matrix);
-                    const shredCenter = new THREE.Vector3().setFromMatrixPosition(matrix);
+                    const raycaster = new THREE.Raycaster();
+                    mouse.x = (event.clientX / mount.clientWidth) * 2 - 1;
+                    mouse.y = -(event.clientY / mount.clientHeight) * 2 + 1;
+                    raycaster.setFromCamera(mouse, camera);
                     
-                    dragOffset.copy(shredCenter).sub(intersectionPoint);
-                    
-                    const p = new THREE.Vector3();
-                    const q = new THREE.Quaternion();
-                    const s = new THREE.Vector3();
-                    matrix.decompose(p, q, s);
+                    const planeNormal = camera.position.clone().sub(p).normalize();
+                    const tempPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(planeNormal, p);
+                    const intersectionPoint = new THREE.Vector3();
+                    raycaster.ray.intersectPlane(tempPlane, intersectionPoint);
+
+                    dragOffset.copy(p).sub(intersectionPoint);
 
                     activeGhost.position.copy(p);
                     activeGhost.scale.copy(s);
@@ -188,11 +234,13 @@ const Coleslaw: React.FC = () => {
                 if (draggedShredIndex !== null && activeGhost) {
                     mouse.x = (event.clientX / mount.clientWidth) * 2 - 1;
                     mouse.y = -(event.clientY / mount.clientHeight) * 2 + 1;
+                    
+                    const raycaster = new THREE.Raycaster();
                     raycaster.setFromCamera(mouse, camera);
 
                     if (raycaster.ray.intersectPlane(dragPlane, dragPoint)) {
                         const newPos = dragPoint.add(dragOffset);
-                        activeGhost.position.copy(newPos); // Immediate feedback
+                        activeGhost.position.copy(newPos);
 
                         if (!latestDragPosition) latestDragPosition = new THREE.Vector3();
                         latestDragPosition.copy(newPos);
@@ -203,35 +251,28 @@ const Coleslaw: React.FC = () => {
 
             const onMouseUp = () => {
                 if (draggedShredIndex !== null && activeGhost) {
-                    if (isDragUpdatePending && latestDragPosition) {
-                        worker.postMessage({
-                            type: 'dragMove',
-                            payload: {
-                                shredIndex: draggedShredIndex,
-                                position: { x: latestDragPosition.x, y: latestDragPosition.y, z: latestDragPosition.z }
-                            }
-                        });
-                    }
-
                     worker.postMessage({
                         type: 'dragEnd',
                         payload: {
                             shredIndex: draggedShredIndex,
+                            position: { x: activeGhost.position.x, y: activeGhost.position.y, z: activeGhost.position.z },
                             linvel: { x: mouseVelocity.x * 2.5, y: 5, z: mouseVelocity.y * 2.5 }
                         }
                     });
 
-                    // Immediately unhide the original instanced shred at the ghost's final location.
-                    // This makes it instantly clickable again and avoids a 1-frame flicker.
-                    matrix.compose(activeGhost.position, activeGhost.quaternion, shredScales[draggedShredIndex]);
+                    const visibleMatrix = new THREE.Matrix4();
+                    visibleMatrix.compose(activeGhost.position, activeGhost.quaternion, shredScales[draggedShredIndex]);
+
                     if (draggedShredIndex < numCabbage1) {
-                        cabbageInstance1.setMatrixAt(draggedShredIndex, matrix);
+                        cabbageInstance1.setMatrixAt(draggedShredIndex, visibleMatrix);
                         cabbageInstance1.instanceMatrix.needsUpdate = true;
                     } else if (draggedShredIndex < numCabbage1 + numCabbage2) {
-                        cabbageInstance2.setMatrixAt(draggedShredIndex - numCabbage1, matrix);
+                        const id = draggedShredIndex - numCabbage1;
+                        cabbageInstance2.setMatrixAt(id, visibleMatrix);
                         cabbageInstance2.instanceMatrix.needsUpdate = true;
                     } else {
-                        carrotInstance.setMatrixAt(draggedShredIndex - numCabbage1 - numCabbage2, matrix);
+                        const id = draggedShredIndex - numCabbage1 - numCabbage2;
+                        carrotInstance.setMatrixAt(id, visibleMatrix);
                         carrotInstance.instanceMatrix.needsUpdate = true;
                     }
                     
@@ -278,8 +319,9 @@ const Coleslaw: React.FC = () => {
                         position.set(transforms[offset++], transforms[offset++], transforms[offset++]);
                         quaternion.set(transforms[offset++], transforms[offset++], transforms[offset++], transforms[offset++]);
                         
-                        const scale = (i === draggedShredIndex) ? zeroScale : shredScales[i];
-                        matrix.compose(position, quaternion, scale);
+                        const isDragged = i === draggedShredIndex;
+                        const visibleScale = isDragged ? zeroScale : shredScales[i];
+                        matrix.compose(position, quaternion, visibleScale);
 
                         if (i < numCabbage1) {
                             cabbageInstance1.setMatrixAt(i, matrix);
@@ -290,11 +332,8 @@ const Coleslaw: React.FC = () => {
                         }
                     }
 
-                    instancedMeshes.forEach(mesh => {
-                        mesh.instanceMatrix.needsUpdate = true;
-                    });
+                    instancedMeshes.forEach(mesh => { mesh.instanceMatrix.needsUpdate = true; });
 
-                    // Return buffer to worker for reuse
                     worker.postMessage({ type: 'transforms_ack', payload }, [payload]);
                 }
             };

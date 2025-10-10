@@ -50,9 +50,11 @@ self.onmessage = async (event) => {
             break;
         }
         case 'dragStart': {
-            const { shredIndex } = payload;
+            const { shredIndex, position } = payload;
             if (shreds[shredIndex]) {
-                shreds[shredIndex].body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+                const body = shreds[shredIndex].body;
+                body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+                body.setNextKinematicTranslation(position);
                 kinematicShredIndex = shredIndex;
             }
             break;
@@ -64,9 +66,10 @@ self.onmessage = async (event) => {
             break;
         }
         case 'dragEnd': {
-            const { shredIndex, linvel } = payload;
+            const { shredIndex, linvel, position } = payload;
             if (shreds[shredIndex]) {
                 const shred = shreds[shredIndex];
+                shred.body.setTranslation(position, true); // Teleport to final position before making dynamic
                 shred.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
                 shred.body.setLinvel(linvel, true);
                 // Reset interaction state
