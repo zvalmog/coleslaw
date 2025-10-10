@@ -12,7 +12,7 @@ const Coleslaw: React.FC = () => {
         if (isInitialized.current || !mountRef.current) return;
         isInitialized.current = true;
 
-        let camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer, effect: any;
+        let scene: THREE.Scene, camera: THREE.PerspectiveCamera, renderer: THREE.WebGLRenderer, effect: any;
         let animationFrameId: number;
         let worker: Worker;
 
@@ -23,7 +23,7 @@ const Coleslaw: React.FC = () => {
             worker = new PhysicsWorker();
 
             // Scene setup
-            const scene = new THREE.Scene();
+            scene = new THREE.Scene();
             scene.background = new THREE.Color(0x334155); // slate-700
 
             // Camera setup
@@ -99,6 +99,15 @@ const Coleslaw: React.FC = () => {
             }));
 
             const shredScales: THREE.Vector3[] = shredDimensions.map(d => new THREE.Vector3(d.width, d.height, d.depth));
+            const zeroScale = new THREE.Vector3(0, 0, 0);
+
+            // Ghost mesh for dragging
+            const ghostMeshes = {
+                cabbage1: new THREE.Mesh(shredGeometry, cabbageMaterial1),
+                cabbage2: new THREE.Mesh(shredGeometry, cabbageMaterial2),
+                carrot: new THREE.Mesh(shredGeometry, carrotMaterial),
+            };
+            let activeGhost: THREE.Mesh | null = null;
 
 
             // Init worker
@@ -122,6 +131,7 @@ const Coleslaw: React.FC = () => {
             const dragOffset = new THREE.Vector3();
             let lastMousePos = { x: 0, y: 0 };
             let mouseVelocity = { x: 0, y: 0 };
+            const matrix = new THREE.Matrix4();
 
             const onMouseDown = (event: { clientX: number, clientY: number }) => {
                 mouse.x = (event.clientX / mount.clientWidth) * 2 - 1;
@@ -135,19 +145,34 @@ const Coleslaw: React.FC = () => {
                     const instanceMesh = intersection.object as THREE.InstancedMesh;
                     let shredIndex = 0;
 
-                    if (instanceMesh === cabbageInstance1) shredIndex = instanceId;
-                    else if (instanceMesh === cabbageInstance2) shredIndex = numCabbage1 + instanceId;
-                    else shredIndex = numCabbage1 + numCabbage2 + instanceId;
+                    if (instanceMesh === cabbageInstance1) {
+                         shredIndex = instanceId;
+                         activeGhost = ghostMeshes.cabbage1;
+                    } else if (instanceMesh === cabbageInstance2) {
+                        shredIndex = numCabbage1 + instanceId;
+                        activeGhost = ghostMeshes.cabbage2;
+                    } else {
+                        shredIndex = numCabbage1 + numCabbage2 + instanceId;
+                        activeGhost = ghostMeshes.carrot;
+                    }
                     
                     draggedShredIndex = shredIndex;
                     worker.postMessage({ type: 'dragStart', payload: { shredIndex } });
                     
                     const intersectionPoint = intersection.point.clone();
-                    const matrix = new THREE.Matrix4();
                     instanceMesh.getMatrixAt(instanceId, matrix);
                     const shredCenter = new THREE.Vector3().setFromMatrixPosition(matrix);
                     
                     dragOffset.copy(shredCenter).sub(intersectionPoint);
+                    
+                    const p = new THREE.Vector3();
+                    const q = new THREE.Quaternion();
+                    const s = new THREE.Vector3();
+                    matrix.decompose(p, q, s);
+                    activeGhost.scale.copy(s);
+                    activeGhost.quaternion.copy(q);
+                    scene.add(activeGhost);
+
 
                     const cameraDirection = new THREE.Vector3();
                     camera.getWorldDirection(cameraDirection);
@@ -159,18 +184,19 @@ const Coleslaw: React.FC = () => {
                 mouseVelocity = { x: event.clientX - lastMousePos.x, y: event.clientY - lastMousePos.y };
                 lastMousePos = { x: event.clientX, y: event.clientY };
 
-                if (draggedShredIndex !== null) {
+                if (draggedShredIndex !== null && activeGhost) {
                     mouse.x = (event.clientX / mount.clientWidth) * 2 - 1;
                     mouse.y = -(event.clientY / mount.clientHeight) * 2 + 1;
                     raycaster.setFromCamera(mouse, camera);
 
                     if (raycaster.ray.intersectPlane(dragPlane, dragPoint)) {
-                        dragPoint.add(dragOffset);
+                        const newPos = dragPoint.add(dragOffset);
+                        activeGhost.position.copy(newPos); // Immediate feedback
                         worker.postMessage({
                             type: 'dragMove',
                             payload: {
                                 shredIndex: draggedShredIndex,
-                                position: { x: dragPoint.x, y: dragPoint.y, z: dragPoint.z }
+                                position: { x: newPos.x, y: newPos.y, z: newPos.z }
                             }
                         });
                     }
@@ -186,6 +212,10 @@ const Coleslaw: React.FC = () => {
                             linvel: { x: mouseVelocity.x * 2.5, y: 5, z: mouseVelocity.y * 2.5 }
                         }
                     });
+                    if (activeGhost) {
+                        scene.remove(activeGhost);
+                        activeGhost = null;
+                    }
                     draggedShredIndex = null;
                 }
             };
@@ -214,7 +244,6 @@ const Coleslaw: React.FC = () => {
 
 
             // Animation loop
-            const matrix = new THREE.Matrix4();
             const position = new THREE.Vector3();
             const quaternion = new THREE.Quaternion();
 
@@ -228,7 +257,7 @@ const Coleslaw: React.FC = () => {
                         position.set(transforms[offset++], transforms[offset++], transforms[offset++]);
                         quaternion.set(transforms[offset++], transforms[offset++], transforms[offset++], transforms[offset++]);
                         
-                        const scale = shredScales[i];
+                        const scale = (i === draggedShredIndex) ? zeroScale : shredScales[i];
                         matrix.compose(position, quaternion, scale);
 
                         if (i < numCabbage1) {

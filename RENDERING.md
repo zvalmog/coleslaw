@@ -65,10 +65,14 @@ Several key decisions were made to balance visual quality, interactivity, and pe
 -   **Decision:** The renderer's `devicePixelRatio` is capped at a value of `1.5`.
 -   **Rationale:** Modern high-resolution displays (like Apple's Retina displays) can have a device pixel ratio of 2.0 or higher. Without a cap, this forces the GPU to render four times as many pixels (2.0 * 2.0) as a standard display, which can prevent the simulation from reaching the screen's refresh rate even on powerful hardware. Capping the ratio at 1.5 provides a significant performance boost while maintaining excellent visual sharpness on these screens.
 
-### 6. User Interaction: Kinematic Dragging
+### 6. User Interaction: Responsive Dragging with Ghosting
 
--   **Decision:** When a user clicks and drags a shred, its physics body type is temporarily switched from `Dynamic` to `KinematicPositionBased` inside the physics worker.
--   **Rationale:** A `Dynamic` body is fully controlled by the physics engine (reacting to forces and collisions). A `Kinematic` body, however, can be controlled directly by user code. This switch prevents the physics engine from fighting the user's mouse input, resulting in smooth, direct control. Upon release, the body is switched back to `Dynamic`, and a velocity based on the mouse's final movement is applied to create a satisfying "throwing" effect.
+-   **Decision:** To combat interaction latency from the multi-threaded physics, a "ghost" mesh system is used. When a user clicks and drags a shred:
+    1.  The original shred in the `InstancedMesh` is hidden (by scaling it to zero).
+    2.  A temporary, non-instanced "ghost" `THREE.Mesh` is created and added to the scene at the shred's position.
+    3.  This ghost mesh's position is updated directly on the main thread in the `mousemove` event, perfectly tracking the user's cursor for immediate visual feedback.
+    4.  Simultaneously, the shred's physics body in the worker is switched to `KinematicPositionBased` and its position is updated based on messages from the main thread.
+-   **Rationale:** This decouples the visual feedback loop from the physics simulation loop. The user interacts with the ghost mesh, which feels instantaneous and responsive, eliminating the perceived lag. When the user releases the shred, the ghost is removed, the original instanced shred is made visible again at the final position, and its physics body is switched back to `Dynamic` with an applied velocity, creating a seamless and satisfying "throw."
 
 ## Performance Characteristics
 
