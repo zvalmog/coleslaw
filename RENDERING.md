@@ -65,14 +65,13 @@ Several key decisions were made to balance visual quality, interactivity, and pe
 -   **Decision:** The renderer's `devicePixelRatio` is capped at a value of `1.5`.
 -   **Rationale:** Modern high-resolution displays (like Apple's Retina displays) can have a device pixel ratio of 2.0 or higher. Without a cap, this forces the GPU to render four times as many pixels (2.0 * 2.0) as a standard display, which can prevent the simulation from reaching the screen's refresh rate even on powerful hardware. Capping the ratio at 1.5 provides a significant performance boost while maintaining excellent visual sharpness on these screens.
 
-### 6. User Interaction: Responsive Dragging with Ghosting
+### 6. User Interaction: Prioritized, Just-in-Time Physics Updates
 
--   **Decision:** To combat interaction latency from the multi-threaded physics, a "ghost" mesh system is used. When a user clicks and drags a shred:
-    1.  The original shred in the `InstancedMesh` is hidden (by scaling it to zero).
-    2.  A temporary, non-instanced "ghost" `THREE.Mesh` is created and added to the scene at the shred's position.
-    3.  This ghost mesh's position is updated directly on the main thread in the `mousemove` event, perfectly tracking the user's cursor for immediate visual feedback.
-    4.  Simultaneously, the shred's physics body in the worker is switched to `KinematicPositionBased` and its position is updated based on messages from the main thread.
--   **Rationale:** This decouples the visual feedback loop from the physics simulation loop. The user interacts with the ghost mesh, which feels instantaneous and responsive, eliminating the perceived lag. When the user releases the shred, the ghost is removed, the original instanced shred is made visible again at the final position, and its physics body is switched back to `Dynamic` with an applied velocity, creating a seamless and satisfying "throw."
+-   **Decision:** To provide instant feedback and eliminate interaction latency, a hybrid approach combining a main-thread "ghost" mesh with a prioritized, just-in-time physics update in the worker is used.
+    1.  **Ghosting for Instant Feedback:** When a drag starts, the original instanced shred is hidden and a temporary "ghost" mesh is created on the main thread. This ghost's position is updated in every `mousemove` event, providing immediate, one-to-one visual feedback that perfectly tracks the cursor.
+    2.  **Prioritized Worker Communication:** To prevent a backlog of messages to the physics worker (head-of-line blocking), `mousemove` events send low-cost messages that only update a `kinematicTargetPosition` variable inside the worker.
+    3.  **Just-in-Time Physics Application:** Immediately before each physics `world.step()`, the worker reads the single, most-recent `kinematicTargetPosition` and applies it to the dragged shred's body. Any intermediate, now-stale position updates that arrived between physics steps are effectively ignored.
+-   **Rationale:** This architecture solves two problems. The **ghosting** on the main thread decouples visual feedback from the physics loop, making the interaction feel instantaneous to the user. The **just-in-time physics update** in the worker ensures the underlying physics simulation is always synchronized with the user's latest intent, not a slightly delayed past position. This prevents the disconnect felt when releasing the shred and makes the entire interaction feel robust, reliable, and highly responsive.
 
 ## Performance Characteristics
 

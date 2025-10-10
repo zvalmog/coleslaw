@@ -1,4 +1,3 @@
-
 import React, { useRef, useEffect } from 'react';
 import * as THREE from 'three';
 import { OutlineEffect } from 'three/examples/jsm/effects/OutlineEffect.js';
@@ -109,7 +108,6 @@ const Coleslaw: React.FC = () => {
             };
             let activeGhost: THREE.Mesh | null = null;
 
-
             // Init worker
             worker.postMessage({
                 type: 'init',
@@ -126,6 +124,8 @@ const Coleslaw: React.FC = () => {
             const raycaster = new THREE.Raycaster();
             const mouse = new THREE.Vector2();
             let draggedShredIndex: number | null = null;
+            let latestDragPosition: THREE.Vector3 | null = null;
+            let isDragUpdatePending = false;
             const dragPlane = new THREE.Plane();
             const dragPoint = new THREE.Vector3();
             const dragOffset = new THREE.Vector3();
@@ -169,10 +169,11 @@ const Coleslaw: React.FC = () => {
                     const q = new THREE.Quaternion();
                     const s = new THREE.Vector3();
                     matrix.decompose(p, q, s);
+
+                    activeGhost.position.copy(p);
                     activeGhost.scale.copy(s);
                     activeGhost.quaternion.copy(q);
                     scene.add(activeGhost);
-
 
                     const cameraDirection = new THREE.Vector3();
                     camera.getWorldDirection(cameraDirection);
@@ -192,19 +193,26 @@ const Coleslaw: React.FC = () => {
                     if (raycaster.ray.intersectPlane(dragPlane, dragPoint)) {
                         const newPos = dragPoint.add(dragOffset);
                         activeGhost.position.copy(newPos); // Immediate feedback
-                        worker.postMessage({
-                            type: 'dragMove',
-                            payload: {
-                                shredIndex: draggedShredIndex,
-                                position: { x: newPos.x, y: newPos.y, z: newPos.z }
-                            }
-                        });
+
+                        if (!latestDragPosition) latestDragPosition = new THREE.Vector3();
+                        latestDragPosition.copy(newPos);
+                        isDragUpdatePending = true;
                     }
                 }
             };
 
             const onMouseUp = () => {
-                if (draggedShredIndex !== null) {
+                if (draggedShredIndex !== null && activeGhost) {
+                    if (isDragUpdatePending && latestDragPosition) {
+                        worker.postMessage({
+                            type: 'dragMove',
+                            payload: {
+                                shredIndex: draggedShredIndex,
+                                position: { x: latestDragPosition.x, y: latestDragPosition.y, z: latestDragPosition.z }
+                            }
+                        });
+                    }
+
                     worker.postMessage({
                         type: 'dragEnd',
                         payload: {
@@ -212,11 +220,26 @@ const Coleslaw: React.FC = () => {
                             linvel: { x: mouseVelocity.x * 2.5, y: 5, z: mouseVelocity.y * 2.5 }
                         }
                     });
-                    if (activeGhost) {
-                        scene.remove(activeGhost);
-                        activeGhost = null;
+
+                    // Immediately unhide the original instanced shred at the ghost's final location.
+                    // This makes it instantly clickable again and avoids a 1-frame flicker.
+                    matrix.compose(activeGhost.position, activeGhost.quaternion, shredScales[draggedShredIndex]);
+                    if (draggedShredIndex < numCabbage1) {
+                        cabbageInstance1.setMatrixAt(draggedShredIndex, matrix);
+                        cabbageInstance1.instanceMatrix.needsUpdate = true;
+                    } else if (draggedShredIndex < numCabbage1 + numCabbage2) {
+                        cabbageInstance2.setMatrixAt(draggedShredIndex - numCabbage1, matrix);
+                        cabbageInstance2.instanceMatrix.needsUpdate = true;
+                    } else {
+                        carrotInstance.setMatrixAt(draggedShredIndex - numCabbage1 - numCabbage2, matrix);
+                        carrotInstance.instanceMatrix.needsUpdate = true;
                     }
+                    
+                    scene.remove(activeGhost);
+                    activeGhost = null;
                     draggedShredIndex = null;
+                    latestDragPosition = null;
+                    isDragUpdatePending = false;
                 }
             };
             const onTouchStart = (event: TouchEvent) => {
@@ -233,15 +256,13 @@ const Coleslaw: React.FC = () => {
             };
             const onTouchEnd = () => onMouseUp();
 
-
             mount.addEventListener('mousedown', onMouseDown);
-            mount.addEventListener('mousemove', onMouseMove);
-            mount.addEventListener('mouseup', onMouseUp);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
             mount.addEventListener('touchstart', onTouchStart, { passive: false });
-            mount.addEventListener('touchmove', onTouchMove, { passive: false });
-            mount.addEventListener('touchend', onTouchEnd);
-            mount.addEventListener('touchcancel', onTouchEnd);
-
+            window.addEventListener('touchmove', onTouchMove, { passive: false });
+            window.addEventListener('touchend', onTouchEnd);
+            window.addEventListener('touchcancel', onTouchEnd);
 
             // Animation loop
             const position = new THREE.Vector3();
@@ -279,6 +300,17 @@ const Coleslaw: React.FC = () => {
             };
 
             const animate = () => {
+                if (isDragUpdatePending && draggedShredIndex !== null && latestDragPosition) {
+                    worker.postMessage({
+                        type: 'dragMove',
+                        payload: {
+                            shredIndex: draggedShredIndex,
+                            position: { x: latestDragPosition.x, y: latestDragPosition.y, z: latestDragPosition.z }
+                        }
+                    });
+                    isDragUpdatePending = false;
+                }
+
                 effect.render(scene, camera);
                 animationFrameId = requestAnimationFrame(animate);
             };
@@ -300,12 +332,12 @@ const Coleslaw: React.FC = () => {
             return () => {
                 window.removeEventListener('resize', handleResize);
                 mount.removeEventListener('mousedown', onMouseDown);
-                mount.removeEventListener('mousemove', onMouseMove);
-                mount.removeEventListener('mouseup', onMouseUp);
+                window.removeEventListener('mousemove', onMouseMove);
+                window.removeEventListener('mouseup', onMouseUp);
                 mount.removeEventListener('touchstart', onTouchStart);
-                mount.removeEventListener('touchmove', onTouchMove);
-                mount.removeEventListener('touchend', onTouchEnd);
-                mount.removeEventListener('touchcancel', onTouchEnd);
+                window.removeEventListener('touchmove', onTouchMove);
+                window.removeEventListener('touchend', onTouchEnd);
+                window.removeEventListener('touchcancel', onTouchEnd);
                 cancelAnimationFrame(animationFrameId);
                 worker.postMessage({ type: 'stop' });
                 if (mount && renderer.domElement) {

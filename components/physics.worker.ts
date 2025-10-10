@@ -1,10 +1,13 @@
-
 import * as RAPIER from '@dimforge/rapier3d-compat';
 
 let world: RAPIER.World;
 const shreds: { body: RAPIER.RigidBody }[] = [];
 let transformsBuffer: ArrayBuffer | null;
 let isAnimating = false;
+
+// State for handling prioritized user interaction
+let kinematicShredIndex: number | null = null;
+let kinematicTargetPosition: { x: number; y: number; z: number } | null = null;
 
 self.onmessage = async (event) => {
     const { type, payload } = event.data;
@@ -50,14 +53,14 @@ self.onmessage = async (event) => {
             const { shredIndex } = payload;
             if (shreds[shredIndex]) {
                 shreds[shredIndex].body.setBodyType(RAPIER.RigidBodyType.KinematicPositionBased, true);
+                kinematicShredIndex = shredIndex;
             }
             break;
         }
         case 'dragMove': {
-            const { shredIndex, position } = payload;
-            if (shreds[shredIndex]) {
-                shreds[shredIndex].body.setNextKinematicTranslation(position);
-            }
+            // Instead of applying the move directly, just store the latest position.
+            // This prevents message queue buildup and ensures we always use the most recent data.
+            kinematicTargetPosition = payload.position;
             break;
         }
         case 'dragEnd': {
@@ -66,6 +69,9 @@ self.onmessage = async (event) => {
                 const shred = shreds[shredIndex];
                 shred.body.setBodyType(RAPIER.RigidBodyType.Dynamic, true);
                 shred.body.setLinvel(linvel, true);
+                // Reset interaction state
+                kinematicShredIndex = null;
+                kinematicTargetPosition = null;
             }
             break;
         }
@@ -82,6 +88,11 @@ self.onmessage = async (event) => {
 
 const animate = () => {
     if (!isAnimating) return;
+
+    // "Just-in-time" application of the latest user input before the physics step.
+    if (kinematicShredIndex !== null && kinematicTargetPosition !== null && shreds[kinematicShredIndex]) {
+        shreds[kinematicShredIndex].body.setNextKinematicTranslation(kinematicTargetPosition);
+    }
 
     if (transformsBuffer) {
         world.step();
@@ -101,10 +112,6 @@ const animate = () => {
             transforms[offset + 6] = rot.w;
         }
 
-        // FIX: The postMessage call was causing a TypeScript error because the compiler
-        // was incorrectly inferring 'self' as type Window, leading to a signature mismatch.
-        // Using the options object `{ transfer: [...] }` for the second argument makes
-        // the call compatible with both Worker and Window postMessage signatures.
         self.postMessage({ type: 'transforms', payload: transformsBuffer }, { transfer: [transformsBuffer] });
         transformsBuffer = null; // We've transferred ownership
     }
